@@ -14,7 +14,7 @@
   const DRUMS = [
     { id: 'kick', label: 'Boom!', freq: 86, color: '#ff7a5c' },
     { id: 'snare', label: 'Tap!', freq: 182, color: '#58b8a8' },
-    { id: 'hat', label: 'Tss!', freq: 480, color: '#f3b73f' },
+    { id: 'hat', label: 'Tss!', freq: 6500, color: '#f3b73f' },
     { id: 'tom', label: 'Tom!', freq: 138, color: '#ff9a52' },
     { id: 'ding', label: 'Ding!', freq: 650, color: '#ffd154' },
   ];
@@ -34,7 +34,7 @@
     { type: 'emoji', text: '🎵', label: 'Tra-la!', color: '#8f74dc', note: 783.99 },
   ];
 
-  // Crisp inline SVG graphics for drum bursts (replaces missing PNG assets)
+  // Crisp inline SVG graphics for drum bursts
   const BURST_SVGS = {
     kick: `<svg class="burst-svg" viewBox="0 0 100 100" aria-hidden="true">
       <circle cx="50" cy="52" r="38" fill="#ff7a5c" stroke="#c94934" stroke-width="6"/>
@@ -82,11 +82,13 @@
   let rollDelay = null;
   let rollInterval = null;
   let parentHoldTimer = null;
+  let saveTimer = null;
   let panelBackdrop = null;
+  let previousFocus = null;
 
-  // Track active pointers and keys so multi-touch / multi-key rolls stay smooth
-  const activePointers = new Map();
-  const activeKeys = new Set();
+  // Track active pointers and keys with their individual targets so multi-touch/key rolls stay accurate
+  const activePointers = new Map(); // pointerId -> { x, y, forcedId }
+  const activeKeys = new Map(); // keyCode -> { forcedId }
 
   function loadState() {
     try {
@@ -101,12 +103,19 @@
     }
   }
 
-  function saveState() {
+  function flushSave() {
+    clearTimeout(saveTimer);
+    saveTimer = null;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch {
       // Ignore storage quota or private-mode errors
     }
+  }
+
+  function scheduleSave() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(flushSave, 400);
   }
 
   function applyModeUI() {
@@ -139,14 +148,19 @@
     return audioCtx;
   }
 
-  // Enforces "one sound at a time" with a gentle 18ms fade-out to avoid audio clicks
+  // Enforces "one sound at a time" with a gentle 18ms fade-out to avoid clicks
   function stopActiveSound() {
     if (!activeSound || !audioCtx) return;
     const now = audioCtx.currentTime;
     try {
-      activeSound.gain.gain.cancelScheduledValues(now);
-      activeSound.gain.gain.setValueAtTime(Math.max(activeSound.gain.gain.value, 0.0001), now);
-      activeSound.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
+      const param = activeSound.gain.gain;
+      if (typeof param.cancelAndHoldAtTime === 'function') {
+        param.cancelAndHoldAtTime(now);
+      } else {
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(Math.max(param.value, 0.0001), now);
+      }
+      param.exponentialRampToValueAtTime(0.0001, now + 0.018);
       activeSound.nodes.forEach((node) => {
         try {
           node.stop(now + 0.022);
@@ -168,53 +182,79 @@
     stopActiveSound();
 
     const now = ctx.currentTime;
+    // Unity master bus lets stopActiveSound() fade any multi-voice drum cleanly
     const master = ctx.createGain();
+    master.gain.setValueAtTime(1, now);
     master.connect(ctx.destination);
-    master.gain.setValueAtTime(0.0001, now);
     const nodes = [];
 
     if (drum.id === 'kick' || drum.id === 'tom') {
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, now);
+      env.gain.exponentialRampToValueAtTime(0.26, now + 0.008);
+      env.gain.exponentialRampToValueAtTime(0.0001, now + 0.31);
+      env.connect(master);
+
       const osc = ctx.createOscillator();
       osc.type = drum.id === 'kick' ? 'sine' : 'triangle';
       osc.frequency.setValueAtTime(drum.freq * 2.75, now);
       osc.frequency.exponentialRampToValueAtTime(drum.freq * 0.62, now + 0.17);
-      master.gain.exponentialRampToValueAtTime(0.24, now + 0.008);
-      master.gain.exponentialRampToValueAtTime(0.0001, now + 0.31);
-      osc.connect(master);
+      osc.connect(env);
       osc.start(now);
       osc.stop(now + 0.33);
       nodes.push(osc);
     } else {
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.0001, now);
+      const peak = drum.id === 'hat' ? 0.08 : drum.id === 'ding' ? 0.1 : 0.14;
+      const dur = drum.id === 'hat' ? 0.095 : 0.21;
+      noiseGain.gain.exponentialRampToValueAtTime(peak, now + 0.005);
+      noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      noiseGain.connect(master);
+
       const src = ctx.createBufferSource();
       src.buffer = noiseBuffer;
       const filter = ctx.createBiquadFilter();
       filter.type = drum.id === 'hat' ? 'highpass' : 'bandpass';
-      filter.frequency.value = drum.id === 'hat' ? 6500 : drum.id === 'ding' ? 3600 : 1800;
+      filter.frequency.value = drum.id === 'hat' ? drum.freq : drum.id === 'ding' ? 3600 : 1800;
       filter.Q.value = drum.id === 'ding' ? 1.6 : 0.8;
 
       src.connect(filter);
-      filter.connect(master);
-
-      const peak = drum.id === 'hat' ? 0.07 : 0.14;
-      const dur = drum.id === 'hat' ? 0.095 : 0.21;
-      master.gain.exponentialRampToValueAtTime(peak, now + 0.005);
-      master.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-
+      filter.connect(noiseGain);
       src.start(now);
       src.stop(now + dur + 0.02);
       nodes.push(src);
 
-      if (drum.id === 'ding') {
-        const bell = ctx.createOscillator();
+      if (drum.id === 'snare') {
+        // Warm drum-body tone layered under the snare wire noise
+        const bodyGain = ctx.createGain();
+        bodyGain.gain.setValueAtTime(0.0001, now);
+        bodyGain.gain.exponentialRampToValueAtTime(0.16, now + 0.004);
+        bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+        bodyGain.connect(master);
+
+        const body = ctx.createOscillator();
+        body.type = 'triangle';
+        body.frequency.setValueAtTime(drum.freq, now);
+        body.frequency.exponentialRampToValueAtTime(drum.freq * 0.52, now + 0.09);
+        body.connect(bodyGain);
+        body.start(now);
+        body.stop(now + 0.12);
+        nodes.push(body);
+      } else if (drum.id === 'ding') {
+        // Clear, audible bell tone routed directly to unity master bus
         const bellGain = ctx.createGain();
-        bell.type = 'sine';
-        bell.frequency.setValueAtTime(640, now);
-        bellGain.gain.setValueAtTime(0.14, now);
-        bellGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-        bell.connect(bellGain);
+        bellGain.gain.setValueAtTime(0.0001, now);
+        bellGain.gain.exponentialRampToValueAtTime(0.16, now + 0.005);
+        bellGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
         bellGain.connect(master);
+
+        const bell = ctx.createOscillator();
+        bell.type = 'sine';
+        bell.frequency.setValueAtTime(drum.freq, now);
+        bell.connect(bellGain);
         bell.start(now);
-        bell.stop(now + 0.23);
+        bell.stop(now + 0.36);
         nodes.push(bell);
       }
     }
@@ -231,43 +271,50 @@
 
     const now = ctx.currentTime;
     const master = ctx.createGain();
+    master.gain.setValueAtTime(1, now);
     master.connect(ctx.destination);
-    master.gain.setValueAtTime(0.0001, now);
-    master.gain.exponentialRampToValueAtTime(0.18, now + 0.008);
-    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.setValueAtTime(0.0001, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.19, now + 0.008);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+    bodyGain.connect(master);
 
     const osc = ctx.createOscillator();
     osc.type = 'triangle';
     osc.frequency.setValueAtTime(freq, now);
-    osc.connect(master);
+    osc.connect(bodyGain);
     osc.start(now);
     osc.stop(now + 0.36);
 
-    const overtone = ctx.createOscillator();
     const overGain = ctx.createGain();
+    overGain.gain.setValueAtTime(0.0001, now);
+    overGain.gain.exponentialRampToValueAtTime(0.06, now + 0.005);
+    overGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+    overGain.connect(master);
+
+    const overtone = ctx.createOscillator();
     overtone.type = 'sine';
     overtone.frequency.setValueAtTime(freq * 2, now);
-    overGain.gain.setValueAtTime(0.06, now);
-    overGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
     overtone.connect(overGain);
-    overGain.connect(master);
     overtone.start(now);
     overtone.stop(now + 0.16);
 
     activeSound = { gain: master, nodes: [osc, overtone] };
   }
 
+  // Uses getBoundingClientRect() so SVG <g> elements flush layout reliably too
   function animateElementHit(el) {
     if (!el) return;
     el.classList.remove('hit');
-    void el.offsetWidth;
+    void el.getBoundingClientRect();
     el.classList.add('hit');
   }
 
   function popSoundPill(text) {
     soundEl.textContent = text;
     soundEl.classList.remove('pop');
-    void soundEl.offsetWidth;
+    void soundEl.getBoundingClientRect();
     soundEl.classList.add('pop');
   }
 
@@ -342,7 +389,7 @@
 
     state.total += 1;
     countEl.textContent = String(state.total);
-    saveState();
+    scheduleSave();
   }
 
   function stopRoll() {
@@ -352,20 +399,44 @@
     rollInterval = null;
   }
 
-  function startRoll(getCoords, forcedId = null) {
-    stopRoll();
+  // Dynamically reads the most recent still-held pointer or key on every roll tick
+  function getActiveRollTarget() {
+    if (activePointers.size > 0) {
+      let latest;
+      for (const val of activePointers.values()) latest = val;
+      return {
+        x: latest.x + (Math.random() - 0.5) * 68,
+        y: latest.y + (Math.random() - 0.5) * 44,
+        forcedId: latest.forcedId,
+      };
+    }
+    if (activeKeys.size > 0) {
+      let latest;
+      for (const val of activeKeys.values()) latest = val;
+      return {
+        x: window.innerWidth * (0.14 + Math.random() * 0.72),
+        y: window.innerHeight * (0.18 + Math.random() * 0.56),
+        forcedId: latest.forcedId,
+      };
+    }
+    return null;
+  }
+
+  function ensureRollScheduled() {
+    if (rollDelay || rollInterval) return;
     rollDelay = setTimeout(() => {
+      rollDelay = null;
       rollInterval = setInterval(() => {
         if (panelBackdrop) {
           stopRoll();
           return;
         }
-        const { x, y } = getCoords();
-        smash(
-          x + (Math.random() - 0.5) * 68,
-          y + (Math.random() - 0.5) * 44,
-          forcedId
-        );
+        const target = getActiveRollTarget();
+        if (!target) {
+          stopRoll();
+          return;
+        }
+        smash(target.x, target.y, target.forcedId);
       }, 140);
     }, 330);
   }
@@ -373,42 +444,45 @@
   function maybeStopRoll() {
     if (activePointers.size === 0 && activeKeys.size === 0) {
       stopRoll();
+      flushSave();
     }
   }
 
-  // Pointer interactions on the main stage
+  // Pointer interactions on the main stage (primary mouse button or touch/pen only)
   game.addEventListener('pointerdown', (e) => {
     if (panelBackdrop || parentBtn.contains(e.target)) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     const drumEl = e.target.closest('.drum-piece');
     const padEl = e.target.closest('.toy-pad');
     const forcedId = drumEl?.dataset.drum || padEl?.dataset.num || null;
 
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, forcedId });
     smash(e.clientX, e.clientY, forcedId);
-
-    startRoll(() => {
-      const pos = activePointers.get(e.pointerId) || { x: e.clientX, y: e.clientY };
-      return pos;
-    }, forcedId);
+    ensureRollScheduled();
   });
 
   game.addEventListener('pointermove', (e) => {
-    if (activePointers.has(e.pointerId)) {
-      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const entry = activePointers.get(e.pointerId);
+    if (entry) {
+      entry.x = e.clientX;
+      entry.y = e.clientY;
     }
   });
 
   const endPointer = (e) => {
-    activePointers.delete(e.pointerId);
-    maybeStopRoll();
+    if (activePointers.delete(e.pointerId)) {
+      maybeStopRoll();
+    }
   };
 
   window.addEventListener('pointerup', endPointer);
   window.addEventListener('pointercancel', endPointer);
-  window.addEventListener('contextmenu', (e) => e.preventDefault());
+  window.addEventListener('contextmenu', (e) => {
+    if (!panelBackdrop) e.preventDefault();
+  });
 
-  // Keyboard interactions (including number keys 1-5 in Numbers mode)
+  // Keyboard interactions (preserves browser shortcuts & focused controls)
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (panelBackdrop) {
@@ -418,7 +492,16 @@
       return;
     }
 
-    if (panelBackdrop) return;
+    if (panelBackdrop) {
+      handleModalTab(e);
+      return;
+    }
+
+    // Never hijack OS/browser shortcuts or function keys
+    if (e.metaKey || e.ctrlKey || e.altKey || /^F\d{1,2}$/.test(e.key)) {
+      return;
+    }
+
     if (document.activeElement === parentBtn && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       openPanel();
@@ -430,25 +513,34 @@
     }
 
     e.preventDefault();
-    activeKeys.add(e.code);
 
-    const x = window.innerWidth * (0.14 + Math.random() * 0.72);
-    const y = window.innerHeight * (0.18 + Math.random() * 0.56);
-    const forcedId = state.mode === 'numbers' && /^[1-5]$/.test(e.key) ? e.key : null;
+    // Respect focused number pads when activated with Enter/Space
+    const focusedPad =
+      document.activeElement?.classList?.contains('toy-pad') &&
+      (e.key === 'Enter' || e.key === ' ')
+        ? document.activeElement
+        : null;
 
+    let x = window.innerWidth * (0.14 + Math.random() * 0.72);
+    let y = window.innerHeight * (0.18 + Math.random() * 0.56);
+    let forcedId = state.mode === 'numbers' && /^[1-5]$/.test(e.key) ? e.key : null;
+
+    if (focusedPad) {
+      const rect = focusedPad.getBoundingClientRect();
+      x = rect.left + rect.width / 2;
+      y = rect.top + rect.height / 2;
+      forcedId = focusedPad.dataset.num;
+    }
+
+    activeKeys.set(e.code, { forcedId });
     smash(x, y, forcedId);
-    startRoll(
-      () => ({
-        x: window.innerWidth * (0.14 + Math.random() * 0.72),
-        y: window.innerHeight * (0.18 + Math.random() * 0.56),
-      }),
-      forcedId
-    );
+    ensureRollScheduled();
   });
 
   window.addEventListener('keyup', (e) => {
-    activeKeys.delete(e.code);
-    maybeStopRoll();
+    if (activeKeys.delete(e.code)) {
+      maybeStopRoll();
+    }
   });
 
   window.addEventListener('blur', () => {
@@ -456,9 +548,14 @@
     activeKeys.clear();
     stopRoll();
     cancelParentHold();
+    flushSave();
   });
 
-  // Parent Controls (1.5s hold on top-left corner, or keyboard Enter/Space when focused)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushSave();
+  });
+
+  // Parent Controls (1.5s hold on top-left corner, or Tab-focus + Enter/Space)
   function cancelParentHold() {
     clearTimeout(parentHoldTimer);
     parentHoldTimer = null;
@@ -466,7 +563,10 @@
   }
 
   parentBtn.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.stopPropagation();
+    // Prevent quick pointer taps from focusing parentBtn and bypassing the 1.5s gate on Space/Enter
+    e.preventDefault();
     cancelParentHold();
     parentBtn.classList.add('holding');
     parentHoldTimer = setTimeout(() => {
@@ -479,17 +579,40 @@
   parentBtn.addEventListener('pointercancel', cancelParentHold);
   parentBtn.addEventListener('pointerleave', cancelParentHold);
 
+  function handleModalTab(e) {
+    if (e.key !== 'Tab' || !panelBackdrop) return;
+    const focusables = Array.from(
+      panelBackdrop.querySelectorAll('button:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   function closePanel() {
     if (!panelBackdrop) return;
     panelBackdrop.remove();
     panelBackdrop = null;
+    if (previousFocus && typeof previousFocus.focus === 'function') {
+      previousFocus.focus();
+    }
+    previousFocus = null;
   }
 
   function openPanel() {
     if (panelBackdrop) return;
+    previousFocus = document.activeElement;
     activePointers.clear();
     activeKeys.clear();
     stopRoll();
+    flushSave();
 
     const backdrop = document.createElement('div');
     backdrop.className = 'panel-backdrop';
@@ -503,19 +626,19 @@
         <p class="eyebrow">Parent Controls</p>
         <h2 id="parent-panel-title">Choose a play mode</h2>
         <div class="modes">
-          <button type="button" data-mode="drums" class="${state.mode === 'drums' ? 'active' : ''}">
+          <button type="button" data-mode="drums" class="${state.mode === 'drums' ? 'active' : ''}" aria-pressed="${state.mode === 'drums'}">
             🥁
             <span>Drum Party</span>
             <small>Interactive kit + drum sounds</small>
           </button>
-          <button type="button" data-mode="numbers" class="${state.mode === 'numbers' ? 'active' : ''}">
+          <button type="button" data-mode="numbers" class="${state.mode === 'numbers' ? 'active' : ''}" aria-pressed="${state.mode === 'numbers'}">
             🔢
             <span>Numbers &amp; Emoji</span>
             <small>Counting pads + marimba notes</small>
           </button>
         </div>
         <div class="panel-actions">
-          <button type="button" class="panel-btn ${state.muted ? 'active' : ''}" data-action="mute">
+          <button type="button" class="panel-btn ${state.muted ? 'active' : ''}" data-action="mute" aria-pressed="${state.muted}">
             ${state.muted ? '🔇 Sound muted (Tap to unmute)' : '🔊 Sound on (Tap to mute)'}
           </button>
           <button type="button" class="panel-btn" data-action="reset">
@@ -526,9 +649,9 @@
       </div>
     `;
 
-    // Prevent clicks inside the backdrop from ever reaching #game
-    backdrop.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
+    // Keep pointer events isolated from #game; dismiss backdrop on full click
+    backdrop.addEventListener('pointerdown', (e) => e.stopPropagation());
+    backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) closePanel();
     });
 
@@ -538,7 +661,7 @@
     backdrop.querySelectorAll('[data-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
         state.mode = btn.dataset.mode;
-        saveState();
+        flushSave();
         applyModeUI();
         popSoundPill(state.mode === 'drums' ? 'Ready to drum!' : 'Ready to count!');
         closePanel();
@@ -549,9 +672,10 @@
     muteBtn.addEventListener('click', () => {
       state.muted = !state.muted;
       if (state.muted) stopActiveSound();
-      saveState();
+      flushSave();
       applyModeUI();
       muteBtn.classList.toggle('active', state.muted);
+      muteBtn.setAttribute('aria-pressed', String(state.muted));
       muteBtn.textContent = state.muted
         ? '🔇 Sound muted (Tap to unmute)'
         : '🔊 Sound on (Tap to mute)';
@@ -560,7 +684,7 @@
     const resetBtn = backdrop.querySelector('[data-action="reset"]');
     resetBtn.addEventListener('click', () => {
       state.total = 0;
-      saveState();
+      flushSave();
       applyModeUI();
       resetBtn.textContent = '↺ Counter reset (0)';
     });
