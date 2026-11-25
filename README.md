@@ -14,3 +14,10 @@ Open `index.html` in any modern browser, or serve the folder with any static fil
 ```bash
 python3 -m http.server 8080
 ```
+
+## Testing
+Run the end-to-end Playwright browser playthrough test (covers both game modes, drum rolls, keyboard shortcuts, parent controls, persistence, and responsive viewports):
+
+```bash
+python3 tests/playthrough.py
+```
