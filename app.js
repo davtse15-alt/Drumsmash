@@ -78,13 +78,18 @@
   let state = loadState();
   let audioCtx = null;
   let noiseBuffer = null;
-  let activeSound = null;
+  let softClipCurve = null;
+  let dryBus = null;
+  let reverbBus = null;
+  let activeVoices = [];
   let rollDelay = null;
   let rollInterval = null;
   let parentHoldTimer = null;
   let saveTimer = null;
   let panelBackdrop = null;
   let previousFocus = null;
+
+  const MAX_VOICES = 8;
 
   // Track active pointers and keys with their individual targets so multi-touch/key rolls stay accurate
   const activePointers = new Map(); // pointerId -> { x, y, forcedId }
@@ -130,17 +135,88 @@
       : 'Tap a drum or press any key. Hold for a drum roll!';
   }
 
+  // Gentle tanh-like curve for warm drumhead punch without harsh clipping
+  function createSoftClipCurve(amount = 2.4) {
+    const samples = 1024;
+    const curve = new Float32Array(samples);
+    const norm = Math.tanh(amount);
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / samples - 1;
+      curve[i] = Math.tanh(x * amount) / norm;
+    }
+    return curve;
+  }
+
+  // Small, warm wooden-room stereo impulse response so drums sit in a natural acoustic space
+  function createRoomImpulse(ctx, duration = 0.48) {
+    const rate = ctx.sampleRate;
+    const length = Math.floor(rate * duration);
+    const impulse = ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < length; i++) {
+        const t = i / length;
+        const env = Math.pow(1 - t, 2.8);
+        const white = Math.random() * 2 - 1;
+        // One-pole low-pass damping mimics warm room absorption
+        lp = lp * 0.62 + white * 0.38;
+        data[i] = lp * env;
+      }
+      // Subtle early reflections for acoustic room depth
+      const taps = ch === 0 ? [0.008, 0.017, 0.029] : [0.011, 0.021, 0.034];
+      taps.forEach((sec, idx) => {
+        const pos = Math.floor(sec * rate);
+        if (pos < length) {
+          data[pos] += (0.28 - idx * 0.06) * (ch === 0 ? 1 : -1);
+        }
+      });
+    }
+    return impulse;
+  }
+
   function ensureAudio() {
     if (!audioCtx) {
       const AudioCtor = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtor) return null;
       audioCtx = new AudioCtor();
-      const length = Math.floor(audioCtx.sampleRate * 0.3);
+
+      // 1.5s white noise buffer (long enough for full crash cymbal shimmer)
+      const length = Math.floor(audioCtx.sampleRate * 1.5);
       noiseBuffer = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
       const data = noiseBuffer.getChannelData(0);
       for (let i = 0; i < length; i++) {
         data[i] = Math.random() * 2 - 1;
       }
+
+      softClipCurve = createSoftClipCurve(2.2);
+
+      // Soft master limiter keeps rapid toddler smashes warm and never harsh
+      const compressor = audioCtx.createDynamicsCompressor();
+      compressor.threshold.setValueAtTime(-14, audioCtx.currentTime);
+      compressor.knee.setValueAtTime(18, audioCtx.currentTime);
+      compressor.ratio.setValueAtTime(4, audioCtx.currentTime);
+      compressor.attack.setValueAtTime(0.003, audioCtx.currentTime);
+      compressor.release.setValueAtTime(0.16, audioCtx.currentTime);
+
+      const masterOut = audioCtx.createGain();
+      masterOut.gain.setValueAtTime(0.92, audioCtx.currentTime);
+      compressor.connect(masterOut);
+      masterOut.connect(audioCtx.destination);
+
+      dryBus = audioCtx.createGain();
+      dryBus.gain.setValueAtTime(1, audioCtx.currentTime);
+      dryBus.connect(compressor);
+
+      reverbBus = audioCtx.createGain();
+      reverbBus.gain.setValueAtTime(1, audioCtx.currentTime);
+      const convolver = audioCtx.createConvolver();
+      convolver.buffer = createRoomImpulse(audioCtx, 0.48);
+      const reverbReturn = audioCtx.createGain();
+      reverbReturn.gain.setValueAtTime(0.24, audioCtx.currentTime);
+      reverbBus.connect(convolver);
+      convolver.connect(reverbReturn);
+      reverbReturn.connect(compressor);
     }
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(() => {});
@@ -148,22 +224,21 @@
     return audioCtx;
   }
 
-  // Enforces "one sound at a time" with a gentle 18ms fade-out to avoid clicks
-  function stopActiveSound() {
-    if (!activeSound || !audioCtx) return;
+  function fadeOutVoice(voice, fadeSec = 0.025) {
+    if (!voice || !audioCtx) return;
     const now = audioCtx.currentTime;
     try {
-      const param = activeSound.gain.gain;
+      const param = voice.gain.gain;
       if (typeof param.cancelAndHoldAtTime === 'function') {
         param.cancelAndHoldAtTime(now);
       } else {
         param.cancelScheduledValues(now);
         param.setValueAtTime(Math.max(param.value, 0.0001), now);
       }
-      param.exponentialRampToValueAtTime(0.0001, now + 0.018);
-      activeSound.nodes.forEach((node) => {
+      param.exponentialRampToValueAtTime(0.0001, now + fadeSec);
+      voice.nodes.forEach((node) => {
         try {
-          node.stop(now + 0.022);
+          node.stop(now + fadeSec + 0.006);
         } catch {
           // Node may already have stopped
         }
@@ -171,7 +246,56 @@
     } catch {
       // Ignore Web Audio scheduling errors
     }
-    activeSound = null;
+  }
+
+  function stopAllSounds() {
+    activeVoices.forEach((voice) => fadeOutVoice(voice, 0.02));
+    activeVoices = [];
+  }
+
+  function registerVoice(id, gain, nodes, endTime) {
+    const now = audioCtx.currentTime;
+    activeVoices = activeVoices.filter((v) => v.endTime > now);
+
+    // Closed hi-hat chokes any previous hi-hat for crisp acoustic rolls
+    if (id === 'hat') {
+      activeVoices = activeVoices.filter((v) => {
+        if (v.id === 'hat') {
+          fadeOutVoice(v, 0.025);
+          return false;
+        }
+        return true;
+      });
+    }
+
+    while (activeVoices.length >= MAX_VOICES) {
+      const oldest = activeVoices.shift();
+      fadeOutVoice(oldest, 0.03);
+    }
+
+    activeVoices.push({ id, gain, nodes, endTime });
+  }
+
+  function createVoiceOutput(ctx, panValue, reverbAmount) {
+    const voiceGain = ctx.createGain();
+    voiceGain.gain.setValueAtTime(1, ctx.currentTime);
+
+    let outNode = voiceGain;
+    if (typeof ctx.createStereoPanner === 'function') {
+      const panner = ctx.createStereoPanner();
+      panner.pan.setValueAtTime(panValue, ctx.currentTime);
+      voiceGain.connect(panner);
+      outNode = panner;
+    }
+
+    outNode.connect(dryBus);
+    if (reverbAmount > 0) {
+      const send = ctx.createGain();
+      send.gain.setValueAtTime(reverbAmount, ctx.currentTime);
+      outNode.connect(send);
+      send.connect(reverbBus);
+    }
+    return voiceGain;
   }
 
   function playDrum(drum) {
@@ -179,87 +303,354 @@
     const ctx = ensureAudio();
     if (!ctx) return;
 
-    stopActiveSound();
-
     const now = ctx.currentTime;
-    // Unity master bus lets stopActiveSound() fade any multi-voice drum cleanly
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(1, now);
-    master.connect(ctx.destination);
+    // Subtle humanization so repeated hits and rolls sound like real sticks
+    const pitchVar = 0.982 + Math.random() * 0.036;
+    const vel = 0.9 + Math.random() * 0.14;
     const nodes = [];
 
-    if (drum.id === 'kick' || drum.id === 'tom') {
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, now);
-      env.gain.exponentialRampToValueAtTime(0.26, now + 0.008);
-      env.gain.exponentialRampToValueAtTime(0.0001, now + 0.31);
-      env.connect(master);
+    const panMap = { hat: -0.42, snare: -0.18, kick: 0, tom: 0.22, ding: 0.42 };
+    const revMap = { hat: 0.16, snare: 0.34, kick: 0.14, tom: 0.28, ding: 0.42 };
+    const voiceGain = createVoiceOutput(ctx, panMap[drum.id] ?? 0, revMap[drum.id] ?? 0.2);
+    let endTime = now + 0.5;
 
-      const osc = ctx.createOscillator();
-      osc.type = drum.id === 'kick' ? 'sine' : 'triangle';
-      osc.frequency.setValueAtTime(drum.freq * 2.75, now);
-      osc.frequency.exponentialRampToValueAtTime(drum.freq * 0.62, now + 0.17);
-      osc.connect(env);
-      osc.start(now);
-      osc.stop(now + 0.33);
-      nodes.push(osc);
-    } else {
-      const noiseGain = ctx.createGain();
-      noiseGain.gain.setValueAtTime(0.0001, now);
-      const peak = drum.id === 'hat' ? 0.08 : drum.id === 'ding' ? 0.1 : 0.14;
-      const dur = drum.id === 'hat' ? 0.095 : 0.21;
-      noiseGain.gain.exponentialRampToValueAtTime(peak, now + 0.005);
-      noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-      noiseGain.connect(master);
+    if (drum.id === 'kick') {
+      // 1. Sub-bass acoustic shell body
+      const bodyEnv = ctx.createGain();
+      bodyEnv.gain.setValueAtTime(0.0001, now);
+      bodyEnv.gain.linearRampToValueAtTime(0.58 * vel, now + 0.003);
+      bodyEnv.gain.exponentialRampToValueAtTime(0.18 * vel, now + 0.11);
+      bodyEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
 
-      const src = ctx.createBufferSource();
-      src.buffer = noiseBuffer;
-      const filter = ctx.createBiquadFilter();
-      filter.type = drum.id === 'hat' ? 'highpass' : 'bandpass';
-      filter.frequency.value = drum.id === 'hat' ? drum.freq : drum.id === 'ding' ? 3600 : 1800;
-      filter.Q.value = drum.id === 'ding' ? 1.6 : 0.8;
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = softClipCurve;
+      bodyEnv.connect(shaper);
+      shaper.connect(voiceGain);
 
-      src.connect(filter);
-      filter.connect(noiseGain);
-      src.start(now);
-      src.stop(now + dur + 0.02);
-      nodes.push(src);
+      const sub = ctx.createOscillator();
+      sub.type = 'sine';
+      sub.frequency.setValueAtTime(142 * pitchVar, now);
+      sub.frequency.exponentialRampToValueAtTime(54 * pitchVar, now + 0.055);
+      sub.frequency.exponentialRampToValueAtTime(41 * pitchVar, now + 0.36);
+      sub.connect(bodyEnv);
+      sub.start(now);
+      sub.stop(now + 0.44);
+      nodes.push(sub);
 
-      if (drum.id === 'snare') {
-        // Warm drum-body tone layered under the snare wire noise
-        const bodyGain = ctx.createGain();
-        bodyGain.gain.setValueAtTime(0.0001, now);
-        bodyGain.gain.exponentialRampToValueAtTime(0.16, now + 0.004);
-        bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
-        bodyGain.connect(master);
+      // 2. Warm felt-beater punch (audible even on small laptop/phone speakers)
+      const punchEnv = ctx.createGain();
+      punchEnv.gain.setValueAtTime(0.0001, now);
+      punchEnv.gain.linearRampToValueAtTime(0.24 * vel, now + 0.002);
+      punchEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.065);
+      punchEnv.connect(voiceGain);
 
-        const body = ctx.createOscillator();
-        body.type = 'triangle';
-        body.frequency.setValueAtTime(drum.freq, now);
-        body.frequency.exponentialRampToValueAtTime(drum.freq * 0.52, now + 0.09);
-        body.connect(bodyGain);
-        body.start(now);
-        body.stop(now + 0.12);
-        nodes.push(body);
-      } else if (drum.id === 'ding') {
-        // Clear, audible bell tone routed directly to unity master bus
-        const bellGain = ctx.createGain();
-        bellGain.gain.setValueAtTime(0.0001, now);
-        bellGain.gain.exponentialRampToValueAtTime(0.16, now + 0.005);
-        bellGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
-        bellGain.connect(master);
+      const punch = ctx.createOscillator();
+      punch.type = 'triangle';
+      punch.frequency.setValueAtTime(240 * pitchVar, now);
+      punch.frequency.exponentialRampToValueAtTime(88 * pitchVar, now + 0.045);
+      punch.connect(punchEnv);
+      punch.start(now);
+      punch.stop(now + 0.075);
+      nodes.push(punch);
 
-        const bell = ctx.createOscillator();
-        bell.type = 'sine';
-        bell.frequency.setValueAtTime(drum.freq, now);
-        bell.connect(bellGain);
-        bell.start(now);
-        bell.stop(now + 0.36);
-        nodes.push(bell);
-      }
+      // 3. Felt beater skin click transient
+      const clickEnv = ctx.createGain();
+      clickEnv.gain.setValueAtTime(0.0001, now);
+      clickEnv.gain.linearRampToValueAtTime(0.18 * vel, now + 0.0015);
+      clickEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
+      clickEnv.connect(voiceGain);
+
+      const clickSrc = ctx.createBufferSource();
+      clickSrc.buffer = noiseBuffer;
+      const clickFilter = ctx.createBiquadFilter();
+      clickFilter.type = 'bandpass';
+      clickFilter.frequency.setValueAtTime(2200 * pitchVar, now);
+      clickFilter.Q.setValueAtTime(1.3, now);
+      clickSrc.connect(clickFilter);
+      clickFilter.connect(clickEnv);
+      clickSrc.start(now);
+      clickSrc.stop(now + 0.025);
+      nodes.push(clickSrc);
+
+      endTime = now + 0.45;
+    } else if (drum.id === 'snare') {
+      // 1. Acoustic snare shell fundamental
+      const shellEnv = ctx.createGain();
+      shellEnv.gain.setValueAtTime(0.0001, now);
+      shellEnv.gain.linearRampToValueAtTime(0.32 * vel, now + 0.0025);
+      shellEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.17);
+      shellEnv.connect(voiceGain);
+
+      const shell = ctx.createOscillator();
+      shell.type = 'triangle';
+      shell.frequency.setValueAtTime(235 * pitchVar, now);
+      shell.frequency.exponentialRampToValueAtTime(168 * pitchVar, now + 0.048);
+      shell.connect(shellEnv);
+      shell.start(now);
+      shell.stop(now + 0.19);
+      nodes.push(shell);
+
+      // 2. Upper drumhead resonance mode (~1.85x)
+      const headEnv = ctx.createGain();
+      headEnv.gain.setValueAtTime(0.0001, now);
+      headEnv.gain.linearRampToValueAtTime(0.16 * vel, now + 0.002);
+      headEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.095);
+      headEnv.connect(voiceGain);
+
+      const head = ctx.createOscillator();
+      head.type = 'sine';
+      head.frequency.setValueAtTime(345 * pitchVar, now);
+      head.frequency.exponentialRampToValueAtTime(280 * pitchVar, now + 0.05);
+      head.connect(headEnv);
+      head.start(now);
+      head.stop(now + 0.11);
+      nodes.push(head);
+
+      // 3. Crisp snare-wire rattle
+      const wireEnv = ctx.createGain();
+      wireEnv.gain.setValueAtTime(0.0001, now);
+      wireEnv.gain.linearRampToValueAtTime(0.3 * vel, now + 0.0025);
+      wireEnv.gain.exponentialRampToValueAtTime(0.075 * vel, now + 0.075);
+      wireEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+      wireEnv.connect(voiceGain);
+
+      const wireSrc = ctx.createBufferSource();
+      wireSrc.buffer = noiseBuffer;
+      const wireHp = ctx.createBiquadFilter();
+      wireHp.type = 'highpass';
+      wireHp.frequency.setValueAtTime(1150, now);
+      const wireTone = ctx.createBiquadFilter();
+      wireTone.type = 'peaking';
+      wireTone.frequency.setValueAtTime(3200 * pitchVar, now);
+      wireTone.Q.setValueAtTime(1.1, now);
+      wireTone.gain.setValueAtTime(4, now);
+      const wireLp = ctx.createBiquadFilter();
+      wireLp.type = 'lowpass';
+      wireLp.frequency.setValueAtTime(9800, now);
+
+      wireSrc.connect(wireHp);
+      wireHp.connect(wireTone);
+      wireTone.connect(wireLp);
+      wireLp.connect(wireEnv);
+      wireSrc.start(now, Math.random() * 0.4);
+      wireSrc.stop(now + 0.26);
+      nodes.push(wireSrc);
+
+      // 4. Stick-on-head snap transient
+      const snapEnv = ctx.createGain();
+      snapEnv.gain.setValueAtTime(0.0001, now);
+      snapEnv.gain.linearRampToValueAtTime(0.2 * vel, now + 0.001);
+      snapEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.012);
+      snapEnv.connect(voiceGain);
+
+      const snapSrc = ctx.createBufferSource();
+      snapSrc.buffer = noiseBuffer;
+      const snapFilter = ctx.createBiquadFilter();
+      snapFilter.type = 'bandpass';
+      snapFilter.frequency.setValueAtTime(4400 * pitchVar, now);
+      snapFilter.Q.setValueAtTime(1.6, now);
+      snapSrc.connect(snapFilter);
+      snapFilter.connect(snapEnv);
+      snapSrc.start(now, Math.random() * 0.3);
+      snapSrc.stop(now + 0.018);
+      nodes.push(snapSrc);
+
+      endTime = now + 0.28;
+    } else if (drum.id === 'tom') {
+      const baseFreq = 104 * pitchVar;
+
+      // 1. Deep resonant floor-tom fundamental
+      const bodyEnv = ctx.createGain();
+      bodyEnv.gain.setValueAtTime(0.0001, now);
+      bodyEnv.gain.linearRampToValueAtTime(0.46 * vel, now + 0.004);
+      bodyEnv.gain.exponentialRampToValueAtTime(0.14 * vel, now + 0.18);
+      bodyEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
+
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = softClipCurve;
+      bodyEnv.connect(shaper);
+      shaper.connect(voiceGain);
+
+      const body = ctx.createOscillator();
+      body.type = 'sine';
+      body.frequency.setValueAtTime(baseFreq * 1.65, now);
+      body.frequency.exponentialRampToValueAtTime(baseFreq, now + 0.09);
+      body.frequency.exponentialRampToValueAtTime(baseFreq * 0.89, now + 0.45);
+      body.connect(bodyEnv);
+      body.start(now);
+      body.stop(now + 0.5);
+      nodes.push(body);
+
+      // 2. Circular drumhead (1,1) Bessel overtone (1.59x) for realistic acoustic tom character
+      const overEnv = ctx.createGain();
+      overEnv.gain.setValueAtTime(0.0001, now);
+      overEnv.gain.linearRampToValueAtTime(0.15 * vel, now + 0.003);
+      overEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.19);
+      overEnv.connect(voiceGain);
+
+      const over = ctx.createOscillator();
+      over.type = 'sine';
+      over.frequency.setValueAtTime(baseFreq * 2.15, now);
+      over.frequency.exponentialRampToValueAtTime(baseFreq * 1.59, now + 0.075);
+      over.connect(overEnv);
+      over.start(now);
+      over.stop(now + 0.21);
+      nodes.push(over);
+
+      // 3. Soft drumstick-on-head thump
+      const atkEnv = ctx.createGain();
+      atkEnv.gain.setValueAtTime(0.0001, now);
+      atkEnv.gain.linearRampToValueAtTime(0.14 * vel, now + 0.002);
+      atkEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.022);
+      atkEnv.connect(voiceGain);
+
+      const atkSrc = ctx.createBufferSource();
+      atkSrc.buffer = noiseBuffer;
+      const atkFilter = ctx.createBiquadFilter();
+      atkFilter.type = 'bandpass';
+      atkFilter.frequency.setValueAtTime(1050 * pitchVar, now);
+      atkFilter.Q.setValueAtTime(1.2, now);
+      atkSrc.connect(atkFilter);
+      atkFilter.connect(atkEnv);
+      atkSrc.start(now, Math.random() * 0.3);
+      atkSrc.stop(now + 0.03);
+      nodes.push(atkSrc);
+
+      endTime = now + 0.52;
+    } else if (drum.id === 'hat') {
+      // 1. Six inharmonic bronze partials for realistic metallic hi-hat shimmer
+      const metalBus = ctx.createGain();
+      metalBus.gain.setValueAtTime(0.0001, now);
+      metalBus.gain.linearRampToValueAtTime(0.13 * vel, now + 0.002);
+      metalBus.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+
+      const metalBp = ctx.createBiquadFilter();
+      metalBp.type = 'bandpass';
+      metalBp.frequency.setValueAtTime(8200 * pitchVar, now);
+      metalBp.Q.setValueAtTime(1.1, now);
+      const metalHp = ctx.createBiquadFilter();
+      metalHp.type = 'highpass';
+      metalHp.frequency.setValueAtTime(6000, now);
+
+      metalBus.connect(metalBp);
+      metalBp.connect(metalHp);
+      metalHp.connect(voiceGain);
+
+      const ratios = [296, 415, 543, 682, 811, 1024];
+      ratios.forEach((f) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(f * pitchVar, now);
+        osc.connect(metalBus);
+        osc.start(now);
+        osc.stop(now + 0.11);
+        nodes.push(osc);
+      });
+
+      // 2. Crisp closed-hat air & stick "chick"
+      const airEnv = ctx.createGain();
+      airEnv.gain.setValueAtTime(0.0001, now);
+      airEnv.gain.linearRampToValueAtTime(0.16 * vel, now + 0.0015);
+      airEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.072);
+      airEnv.connect(voiceGain);
+
+      const airSrc = ctx.createBufferSource();
+      airSrc.buffer = noiseBuffer;
+      const airHp = ctx.createBiquadFilter();
+      airHp.type = 'highpass';
+      airHp.frequency.setValueAtTime(7400, now);
+      const airLp = ctx.createBiquadFilter();
+      airLp.type = 'lowpass';
+      airLp.frequency.setValueAtTime(13000, now);
+
+      airSrc.connect(airHp);
+      airHp.connect(airLp);
+      airLp.connect(airEnv);
+      airSrc.start(now, Math.random() * 0.5);
+      airSrc.stop(now + 0.09);
+      nodes.push(airSrc);
+
+      endTime = now + 0.12;
+    } else if (drum.id === 'ding') {
+      // 1. Shimmering bronze crash cymbal partial cluster
+      const shimmerBus = ctx.createGain();
+      shimmerBus.gain.setValueAtTime(0.0001, now);
+      shimmerBus.gain.linearRampToValueAtTime(0.11 * vel, now + 0.01);
+      shimmerBus.gain.exponentialRampToValueAtTime(0.032 * vel, now + 0.32);
+      shimmerBus.gain.exponentialRampToValueAtTime(0.0001, now + 1.15);
+
+      const shimHp = ctx.createBiquadFilter();
+      shimHp.type = 'highpass';
+      shimHp.frequency.setValueAtTime(2800, now);
+      const shimLp = ctx.createBiquadFilter();
+      shimLp.type = 'lowpass';
+      shimLp.frequency.setValueAtTime(10800, now);
+
+      shimmerBus.connect(shimHp);
+      shimHp.connect(shimLp);
+      shimLp.connect(voiceGain);
+
+      const crashPartials = [312, 468, 619, 804, 1088, 1412];
+      crashPartials.forEach((f) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(f * pitchVar, now);
+        osc.connect(shimmerBus);
+        osc.start(now);
+        osc.stop(now + 1.18);
+        nodes.push(osc);
+      });
+
+      // 2. Smooth acoustic cymbal wash
+      const washEnv = ctx.createGain();
+      washEnv.gain.setValueAtTime(0.0001, now);
+      washEnv.gain.linearRampToValueAtTime(0.16 * vel, now + 0.012);
+      washEnv.gain.exponentialRampToValueAtTime(0.045 * vel, now + 0.28);
+      washEnv.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
+      washEnv.connect(voiceGain);
+
+      const washSrc = ctx.createBufferSource();
+      washSrc.buffer = noiseBuffer;
+      const washBp = ctx.createBiquadFilter();
+      washBp.type = 'bandpass';
+      washBp.frequency.setValueAtTime(5600 * pitchVar, now);
+      washBp.Q.setValueAtTime(0.6, now);
+      const washLp = ctx.createBiquadFilter();
+      washLp.type = 'lowpass';
+      washLp.frequency.setValueAtTime(11200, now);
+
+      washSrc.connect(washBp);
+      washBp.connect(washLp);
+      washLp.connect(washEnv);
+      washSrc.start(now, Math.random() * 0.25);
+      washSrc.stop(now + 1.08);
+      nodes.push(washSrc);
+
+      // 3. Subtle brass cymbal bell ping on impact
+      const bellPairs = [
+        { freq: 980 * pitchVar, gain: 0.08 * vel, dur: 0.42 },
+        { freq: 1495 * pitchVar, gain: 0.045 * vel, dur: 0.28 },
+      ];
+      bellPairs.forEach((b) => {
+        const bEnv = ctx.createGain();
+        bEnv.gain.setValueAtTime(0.0001, now);
+        bEnv.gain.linearRampToValueAtTime(b.gain, now + 0.003);
+        bEnv.gain.exponentialRampToValueAtTime(0.0001, now + b.dur);
+        bEnv.connect(voiceGain);
+
+        const bOsc = ctx.createOscillator();
+        bOsc.type = 'sine';
+        bOsc.frequency.setValueAtTime(b.freq, now);
+        bOsc.connect(bEnv);
+        bOsc.start(now);
+        bOsc.stop(now + b.dur + 0.02);
+        nodes.push(bOsc);
+      });
+
+      endTime = now + 1.2;
     }
 
-    activeSound = { gain: master, nodes };
+    registerVoice(drum.id, voiceGain, nodes, endTime);
   }
 
   function playMarimba(freq) {
@@ -267,40 +658,63 @@
     const ctx = ensureAudio();
     if (!ctx) return;
 
-    stopActiveSound();
-
     const now = ctx.currentTime;
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(1, now);
-    master.connect(ctx.destination);
+    const vel = 0.92 + Math.random() * 0.1;
+    // Gentle pitch-mapped stereo spread across the rosewood bars
+    const pan = Math.max(-0.35, Math.min(0.35, ((freq - 700) / 350) * 0.3));
+    const voiceGain = createVoiceOutput(ctx, pan, 0.26);
+    const nodes = [];
 
-    const bodyGain = ctx.createGain();
-    bodyGain.gain.setValueAtTime(0.0001, now);
-    bodyGain.gain.exponentialRampToValueAtTime(0.19, now + 0.008);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
-    bodyGain.connect(master);
+    // 1. Warm rosewood bar fundamental
+    const bodyEnv = ctx.createGain();
+    bodyEnv.gain.setValueAtTime(0.0001, now);
+    bodyEnv.gain.linearRampToValueAtTime(0.28 * vel, now + 0.004);
+    bodyEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.52);
+    bodyEnv.connect(voiceGain);
 
     const osc = ctx.createOscillator();
-    osc.type = 'triangle';
+    osc.type = 'sine';
     osc.frequency.setValueAtTime(freq, now);
-    osc.connect(bodyGain);
+    osc.connect(bodyEnv);
     osc.start(now);
-    osc.stop(now + 0.36);
+    osc.stop(now + 0.55);
+    nodes.push(osc);
 
-    const overGain = ctx.createGain();
-    overGain.gain.setValueAtTime(0.0001, now);
-    overGain.gain.exponentialRampToValueAtTime(0.06, now + 0.005);
-    overGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
-    overGain.connect(master);
+    // 2. Classic arched marimba 4th harmonic (2 octaves up, fast decay)
+    const overEnv = ctx.createGain();
+    overEnv.gain.setValueAtTime(0.0001, now);
+    overEnv.gain.linearRampToValueAtTime(0.085 * vel, now + 0.0025);
+    overEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.075);
+    overEnv.connect(voiceGain);
 
     const overtone = ctx.createOscillator();
     overtone.type = 'sine';
-    overtone.frequency.setValueAtTime(freq * 2, now);
-    overtone.connect(overGain);
+    overtone.frequency.setValueAtTime(freq * 4, now);
+    overtone.connect(overEnv);
     overtone.start(now);
-    overtone.stop(now + 0.16);
+    overtone.stop(now + 0.09);
+    nodes.push(overtone);
 
-    activeSound = { gain: master, nodes: [osc, overtone] };
+    // 3. Soft yarn-mallet wooden knock transient
+    const malletEnv = ctx.createGain();
+    malletEnv.gain.setValueAtTime(0.0001, now);
+    malletEnv.gain.linearRampToValueAtTime(0.09 * vel, now + 0.0015);
+    malletEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.014);
+    malletEnv.connect(voiceGain);
+
+    const malletSrc = ctx.createBufferSource();
+    malletSrc.buffer = noiseBuffer;
+    const malletFilter = ctx.createBiquadFilter();
+    malletFilter.type = 'bandpass';
+    malletFilter.frequency.setValueAtTime(Math.min(freq * 2.2, 2600), now);
+    malletFilter.Q.setValueAtTime(2.0, now);
+    malletSrc.connect(malletFilter);
+    malletFilter.connect(malletEnv);
+    malletSrc.start(now, Math.random() * 0.3);
+    malletSrc.stop(now + 0.02);
+    nodes.push(malletSrc);
+
+    registerVoice('marimba', voiceGain, nodes, now + 0.56);
   }
 
   // Uses getBoundingClientRect() so SVG <g> elements flush layout reliably too
@@ -645,7 +1059,7 @@
             ↺ Reset smash counter (${state.total})
           </button>
         </div>
-        <p class="parent-note">Gentle colours, no flashing, and one sound at a time.</p>
+        <p class="parent-note">Gentle colours, no flashing, and soft volume limiting.</p>
       </div>
     `;
 
@@ -671,7 +1085,7 @@
     const muteBtn = backdrop.querySelector('[data-action="mute"]');
     muteBtn.addEventListener('click', () => {
       state.muted = !state.muted;
-      if (state.muted) stopActiveSound();
+      if (state.muted) stopAllSounds();
       flushSave();
       applyModeUI();
       muteBtn.classList.toggle('active', state.muted);
