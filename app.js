@@ -175,8 +175,35 @@
     return impulse;
   }
 
+  let audioUnlocked = false;
+
+  function unlockAudio() {
+    const ctx = ensureAudio();
+    if (!ctx || audioUnlocked) return;
+    try {
+      // Tiny silent buffer reliably unlocks iOS WebKit audio on the very first touch
+      const silent = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const src = ctx.createBufferSource();
+      src.buffer = silent;
+      src.connect(ctx.destination);
+      src.start(0);
+      audioUnlocked = true;
+    } catch {
+      // Will retry on next user gesture
+    }
+  }
+
   function ensureAudio() {
     if (!audioCtx) {
+      // iOS 17+ Safari: allow sound even when the physical Silent switch is on
+      if (navigator.audioSession && 'type' in navigator.audioSession) {
+        try {
+          navigator.audioSession.type = 'playback';
+        } catch {
+          // Ignore on browsers that restrict audioSession
+        }
+      }
+
       const AudioCtor = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtor) return null;
       audioCtx = new AudioCtor();
@@ -218,10 +245,25 @@
       convolver.connect(reverbReturn);
       reverbReturn.connect(compressor);
     }
-    if (audioCtx.state === 'suspended') {
+    // Handles both 'suspended' and iOS Safari's 'interrupted' state (after lock/call/tab switch)
+    if (audioCtx.state !== 'running') {
       audioCtx.resume().catch(() => {});
     }
     return audioCtx;
+  }
+
+  function disconnectVoice(voice) {
+    if (!voice || voice.disconnected) return;
+    voice.disconnected = true;
+    clearTimeout(voice.cleanupTimer);
+    voice.cleanupTimer = null;
+    (voice.outputNodes || [voice.gain]).forEach((node) => {
+      try {
+        node.disconnect();
+      } catch {
+        // Ignore already-disconnected nodes
+      }
+    });
   }
 
   function fadeOutVoice(voice, fadeSec = 0.025) {
@@ -246,6 +288,8 @@
     } catch {
       // Ignore Web Audio scheduling errors
     }
+    clearTimeout(voice.cleanupTimer);
+    voice.cleanupTimer = setTimeout(() => disconnectVoice(voice), (fadeSec + 0.04) * 1000);
   }
 
   function stopAllSounds() {
@@ -253,7 +297,7 @@
     activeVoices = [];
   }
 
-  function registerVoice(id, gain, nodes, endTime) {
+  function registerVoice(id, voiceOutput, nodes, endTime) {
     const now = audioCtx.currentTime;
     activeVoices = activeVoices.filter((v) => v.endTime > now);
 
@@ -273,12 +317,24 @@
       fadeOutVoice(oldest, 0.03);
     }
 
-    activeVoices.push({ id, gain, nodes, endTime });
+    const voice = {
+      id,
+      gain: voiceOutput.gain,
+      outputNodes: voiceOutput.outputNodes,
+      nodes,
+      endTime,
+      disconnected: false,
+      cleanupTimer: null,
+    };
+    const cleanupMs = Math.max(80, (endTime - now + 0.08) * 1000);
+    voice.cleanupTimer = setTimeout(() => disconnectVoice(voice), cleanupMs);
+    activeVoices.push(voice);
   }
 
   function createVoiceOutput(ctx, panValue, reverbAmount) {
     const voiceGain = ctx.createGain();
     voiceGain.gain.setValueAtTime(1, ctx.currentTime);
+    const outputNodes = [voiceGain];
 
     let outNode = voiceGain;
     if (typeof ctx.createStereoPanner === 'function') {
@@ -286,6 +342,7 @@
       panner.pan.setValueAtTime(panValue, ctx.currentTime);
       voiceGain.connect(panner);
       outNode = panner;
+      outputNodes.push(panner);
     }
 
     outNode.connect(dryBus);
@@ -294,9 +351,13 @@
       send.gain.setValueAtTime(reverbAmount, ctx.currentTime);
       outNode.connect(send);
       send.connect(reverbBus);
+      outputNodes.push(send);
     }
-    return voiceGain;
+    return { gain: voiceGain, outputNodes };
   }
+
+  // Unlock Web Audio synchronously on first touchstart for iPhone / iOS Safari
+  window.addEventListener('touchstart', unlockAudio, { passive: true, capture: true });
 
   function playDrum(drum) {
     if (state.muted) return;
@@ -311,7 +372,8 @@
 
     const panMap = { hat: -0.42, snare: -0.18, kick: 0, tom: 0.22, ding: 0.42 };
     const revMap = { hat: 0.16, snare: 0.34, kick: 0.14, tom: 0.28, ding: 0.42 };
-    const voiceGain = createVoiceOutput(ctx, panMap[drum.id] ?? 0, revMap[drum.id] ?? 0.2);
+    const voiceOutput = createVoiceOutput(ctx, panMap[drum.id] ?? 0, revMap[drum.id] ?? 0.2);
+    const voiceGain = voiceOutput.gain;
     let endTime = now + 0.5;
 
     if (drum.id === 'kick') {
@@ -650,7 +712,7 @@
       endTime = now + 1.2;
     }
 
-    registerVoice(drum.id, voiceGain, nodes, endTime);
+    registerVoice(drum.id, voiceOutput, nodes, endTime);
   }
 
   function playMarimba(freq) {
@@ -662,7 +724,8 @@
     const vel = 0.92 + Math.random() * 0.1;
     // Gentle pitch-mapped stereo spread across the rosewood bars
     const pan = Math.max(-0.35, Math.min(0.35, ((freq - 700) / 350) * 0.3));
-    const voiceGain = createVoiceOutput(ctx, pan, 0.26);
+    const voiceOutput = createVoiceOutput(ctx, pan, 0.26);
+    const voiceGain = voiceOutput.gain;
     const nodes = [];
 
     // 1. Warm rosewood bar fundamental
@@ -714,7 +777,7 @@
     malletSrc.stop(now + 0.02);
     nodes.push(malletSrc);
 
-    registerVoice('marimba', voiceGain, nodes, now + 0.56);
+    registerVoice('marimba', voiceOutput, nodes, now + 0.56);
   }
 
   // Uses getBoundingClientRect() so SVG <g> elements flush layout reliably too
