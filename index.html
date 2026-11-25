@@ -2,36 +2,179 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Drum Smash — a gentle, colourful tap and keyboard drum toy for toddlers and little drummers.">
   <title>Drum Smash</title>
-  <style>
-    :root { --blue:#245892; --coral:#ff775b; --cream:#fff8e6; }
-    * { box-sizing:border-box } html,body { margin:0; min-height:100%; overflow:hidden; font-family:Arial,Helvetica,sans-serif; color:var(--blue) }
-    body { background:radial-gradient(circle at 12% 18%,#ffdd78 0 5%,transparent 5.4%),radial-gradient(circle at 88% 24%,#b8e7ef 0 8%,transparent 8.4%),linear-gradient(145deg,#fff7df,#f7fbeb) }
-    main { min-height:100vh; min-height:100svh; position:relative; overflow:hidden; touch-action:none; user-select:none }
-    header { padding:24px clamp(22px,5vw,70px); display:flex; justify-content:space-between; align-items:center; position:relative;z-index:2 }
-    .brand {font-size:clamp(24px,3vw,38px);font-weight:800;letter-spacing:-1.7px}.brand b{color:var(--coral)}.dot{display:inline-grid;place-items:center;width:.83em;height:.83em;border-radius:50%;margin-right:5px;font-size:.63em;vertical-align:middle;background:#ff795b;color:#ffd55d;box-shadow:0 4px 0 #c95542}.count{background:#ffffffbf;padding:9px 14px;border-radius:99px;font-weight:700;color:#50729a;font-size:14px}
-    .hero {max-width:850px;margin:2vh auto 0;padding:0 20px;text-align:center;position:relative;z-index:1}.london{display:flex;justify-content:center;gap:24px;font-size:clamp(20px,3vw,32px);margin-bottom:14px}.london span{animation:bob 3s ease-in-out infinite}.london span:nth-child(even){animation-delay:-.9s}.eyebrow{color:#f36e52;letter-spacing:2px;font-weight:800;font-size:12px;margin:0 0 10px}.hero h1{font-size:clamp(47px,8vw,100px);letter-spacing:-5px;line-height:.92;margin:0}.instruction{font-size:clamp(18px,2.4vw,26px);font-weight:700;margin:17px 0 10px;color:#527298}
-    .stage{height:18px;position:relative;margin:6px auto 0;width:min(600px,94vw)}.instrument-burst{width:clamp(70px,10vw,100px);height:auto;filter:drop-shadow(0 5px 3px #2458922b)}.sound{display:inline-block;background:#ffffffa6;font-weight:800;border-radius:99px;padding:8px 18px;margin-top:-4px;min-width:110px}
-    .ground{position:absolute;bottom:0;height:min(14vh,115px);left:0;right:0;display:flex;justify-content:space-around;align-items:center;background:#78c1b4;color:#e4f6df;font-size:clamp(12px,2vw,17px);font-weight:800;transform:rotate(-1deg) scale(1.03)}.ground span:nth-child(2){color:#ffe17f}.ground span:nth-child(3){color:#ffded5}.burst{position:fixed;z-index:4;pointer-events:none;translate:-50% -50%;font-size:clamp(75px,10vw,100px);line-height:1;animation:float 1.25s ease-out forwards}.burst.drum-kick{width:82px;height:82px;border-radius:50%;background:#ffbd65;border:9px solid #e95f51;box-shadow:inset 0 0 0 7px #ffd986,0 5px 0 #23517b1f}.burst.drum-kick:after{content:'';position:absolute;inset:25px;border-radius:50%;background:#f8e9b8}.burst.drum-snare{width:84px;height:44px;border:7px solid #477fa3;border-radius:12px 12px 20px 20px;background:#aee3df;box-shadow:inset 0 8px #e7fcf3,0 6px 0 #245892}.burst.drum-snare:before,.burst.drum-snare:after{content:'';position:absolute;top:42px;width:7px;height:24px;background:#477fa3}.burst.drum-snare:before{left:15px}.burst.drum-snare:after{right:15px}.burst.drum-hat{width:100px;height:25px;border-radius:50%;background:#ffd15d;border:6px solid #e49c39;box-shadow:0 28px 0 -10px #ffd15d}.burst.drum-hat:after{content:'';position:absolute;width:6px;height:65px;background:#637e95;left:42px;top:22px;z-index:-1}.burst.drum-tom{width:78px;height:58px;border-radius:48% 48% 42% 42%;background:#ff9068;border:8px solid #e95f51;box-shadow:inset 0 10px #ffd19e,0 8px 0 #c45a4a}.burst.drum-ding{width:92px;height:18px;border-radius:50%;background:#ffd15d;border:5px solid #e49c39}.burst.drum-ding:before{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#ffbd65;border:4px solid #e49c39;left:31px;top:-9px}.burst.drum-ding:after{content:'';position:absolute;width:5px;height:59px;background:#637e95;left:39px;top:16px;z-index:-1}
-    .parent{position:fixed;z-index:8;top:0;left:0;width:52px;height:52px;border:0;background:transparent}.panel{position:fixed;z-index:10;left:50%;top:50%;transform:translate(-50%,-50%);width:min(610px,calc(100vw - 32px));padding:28px;border-radius:28px;background:#fffdf6;box-shadow:0 20px 60px #1f426640;text-align:left}.panel h2{margin:0;font-size:28px;letter-spacing:-1px}.close{position:absolute;right:20px;top:20px;border:0;background:#e9f2f2;border-radius:50%;font-size:27px;width:39px;height:39px;color:var(--blue)}.modes{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:22px}.modes button{border:3px solid #e7edf1;background:#fff;padding:18px 12px;border-radius:20px;color:var(--blue);font-size:34px}.modes button.active{border-color:#ff9b67}.modes span,.modes small{display:block}.modes span{font-size:17px;font-weight:800;margin-top:7px}.modes small{color:#7187a1;font-size:12px;margin-top:2px}.parent-note{margin:20px 0 0;text-align:center;color:#587693;font-size:13px;font-weight:700}
-    .numbers .stage{display:none}.numbers h1{color:#7b63b5}.numbers .instruction{color:#776b99}@keyframes float{from{opacity:0;translate:-50% -20%}20%{opacity:1}to{opacity:0;translate:-50% -155%}}@keyframes bob{50%{transform:translateY(-5px) rotate(3deg)}}@media(max-width:600px){header{padding:18px 20px}.brand{font-size:27px}.count{font-size:12px;padding:7px 10px}.hero{margin-top:3vh}.stage{height:18px}.ground{height:70px}.ground span{font-size:11px}.panel{padding:23px}.modes{gap:9px}.modes button{padding:13px 5px}}
-  </style>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='28' fill='%23ff6e52'/%3E%3Ccircle cx='32' cy='32' r='19' fill='%23fff4d6'/%3E%3Ccircle cx='32' cy='32' r='8' fill='%23ffd35c'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Nunito:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <main id="game">
-    <button class="parent" aria-label="Parent controls" id="parent"></button>
-    <header><div class="brand"><span class="dot">●</span>Drum <b>Smash</b></div><div class="count"><span id="count">0</span> smashes</div></header>
-    <section class="hero" aria-live="polite"><p class="eyebrow" id="mode-name">DRUM PARTY</p><h1 id="heading">Tap, tap, boom!</h1><p class="instruction" id="instruction">Press anything. Hold it for a drum roll!</p><div class="stage"></div><div class="sound" id="sound">Ready to play!</div></section>
-    <div class="ground"><span>London town</span><span>tap tap tap</span><span>little drummer</span></div>
+    <button class="parent" type="button" id="parent" aria-label="Parent controls (hold for 1.5 seconds)">
+      <span class="parent-ring" aria-hidden="true"></span>
+    </button>
+
+    <div class="sky-decor" aria-hidden="true">
+      <svg class="cloud cloud-1" viewBox="0 0 180 76">
+        <path d="M32 68h118a22 22 0 0 0 4-43.6A32 32 0 0 0 92 14a28 28 0 0 0-52 12A22 22 0 0 0 32 68z"/>
+      </svg>
+      <svg class="cloud cloud-2" viewBox="0 0 180 76">
+        <path d="M32 68h118a22 22 0 0 0 4-43.6A32 32 0 0 0 92 14a28 28 0 0 0-52 12A22 22 0 0 0 32 68z"/>
+      </svg>
+      <svg class="cloud cloud-3" viewBox="0 0 180 76">
+        <path d="M32 68h118a22 22 0 0 0 4-43.6A32 32 0 0 0 92 14a28 28 0 0 0-52 12A22 22 0 0 0 32 68z"/>
+      </svg>
+    </div>
+
+    <header>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
+            <circle cx="16" cy="16" r="10" fill="#fff5d6"/>
+            <circle cx="16" cy="16" r="4.5" fill="#ffd154"/>
+          </svg>
+        </span>
+        Drum <b>Smash</b>
+      </div>
+      <div class="header-pills">
+        <span class="mute-badge" aria-live="polite">🔇 Muted</span>
+        <div class="count-pill"><strong id="count">0</strong> smashes</div>
+      </div>
+    </header>
+
+    <div class="center-wrap">
+      <section class="hero" aria-live="polite">
+        <p class="eyebrow" id="mode-name">DRUM PARTY</p>
+        <h1 id="heading">Tap, tap, boom!</h1>
+        <p class="instruction" id="instruction">Tap a drum or press any key. Hold for a drum roll!</p>
+      </section>
+
+      <div class="stage" aria-label="Interactive toy drum kit">
+        <svg class="drum-kit" viewBox="0 0 640 270" role="img" aria-label="Toy drum kit with hi-hat, snare, bass kick drum, floor tom, and crash cymbal">
+          <!-- Soft stage rug shadow -->
+          <ellipse cx="320" cy="244" rx="268" ry="20" fill="rgba(32, 73, 117, 0.11)"/>
+
+          <!-- Hi-Hat (Left) -->
+          <g class="drum-piece" data-drum="hat">
+            <line x1="88" y1="88" x2="88" y2="236" stroke="#597a96" stroke-width="8" stroke-linecap="round"/>
+            <path d="M88 214l-26 24M88 214l26 24" stroke="#597a96" stroke-width="7" stroke-linecap="round"/>
+            <ellipse cx="88" cy="100" rx="52" ry="13" fill="#e6a82e" stroke="#be7c18" stroke-width="5"/>
+            <ellipse cx="88" cy="88" rx="52" ry="13" fill="#ffda63" stroke="#be7c18" stroke-width="5"/>
+            <ellipse cx="88" cy="83" rx="14" ry="5.5" fill="#fff1a6"/>
+          </g>
+
+          <!-- Crash / Bell Cymbal (Right) -->
+          <g class="drum-piece" data-drum="ding">
+            <line x1="552" y1="74" x2="552" y2="236" stroke="#597a96" stroke-width="8" stroke-linecap="round"/>
+            <path d="M552 214l-26 24M552 214l26 24" stroke="#597a96" stroke-width="7" stroke-linecap="round"/>
+            <g transform="rotate(8 552 74)">
+              <ellipse cx="552" cy="74" rx="60" ry="15" fill="#ffd452" stroke="#c8861e" stroke-width="5"/>
+              <path d="M532 69c4-14 36-14 40 0" fill="#ffb845" stroke="#c8861e" stroke-width="4.5"/>
+              <ellipse cx="552" cy="63" rx="7" ry="3.5" fill="#fff2b0"/>
+            </g>
+          </g>
+
+          <!-- Snare Drum (Mid-Left) -->
+          <g class="drum-piece" data-drum="snare">
+            <path d="M188 184v52M188 218l-24 20M188 218l24 20" stroke="#597a96" stroke-width="7" stroke-linecap="round"/>
+            <rect x="132" y="132" width="112" height="54" rx="16" fill="#5ec2b3" stroke="#2c6f7e" stroke-width="6"/>
+            <ellipse cx="188" cy="134" rx="56" ry="16" fill="#fff7e2" stroke="#2c6f7e" stroke-width="5.5"/>
+            <line x1="156" y1="150" x2="156" y2="178" stroke="#e4fbf6" stroke-width="5" stroke-linecap="round"/>
+            <line x1="188" y1="152" x2="188" y2="180" stroke="#e4fbf6" stroke-width="5" stroke-linecap="round"/>
+            <line x1="220" y1="150" x2="220" y2="178" stroke="#e4fbf6" stroke-width="5" stroke-linecap="round"/>
+          </g>
+
+          <!-- Floor Tom (Mid-Right) -->
+          <g class="drum-piece" data-drum="tom">
+            <path d="M412 186l-10 50M492 186l10 50" stroke="#597a96" stroke-width="7" stroke-linecap="round"/>
+            <path d="M398 124h108v64c0 14-24 24-54 24s-54-10-54-24v-64z" fill="#ff9852" stroke="#c95a33" stroke-width="6"/>
+            <ellipse cx="452" cy="124" rx="54" ry="16" fill="#fff5d9" stroke="#c95a33" stroke-width="5.5"/>
+            <circle cx="424" cy="166" r="6" fill="#ffd98a"/>
+            <circle cx="452" cy="172" r="6" fill="#ffd98a"/>
+            <circle cx="480" cy="166" r="6" fill="#ffd98a"/>
+          </g>
+
+          <!-- Bass Kick Drum (Center Hero) -->
+          <g class="drum-piece" data-drum="kick">
+            <path d="M258 214l-18 24M382 214l18 24" stroke="#4c6f8e" stroke-width="9" stroke-linecap="round"/>
+            <circle cx="320" cy="154" r="82" fill="#ff7357" stroke="#c94732" stroke-width="8"/>
+            <circle cx="320" cy="154" r="63" fill="#fff5db" stroke="#f2c15a" stroke-width="7"/>
+            <circle cx="320" cy="154" r="24" fill="#ffd463"/>
+            <circle cx="320" cy="154" r="10" fill="#ff8462"/>
+            <!-- Toy drum decorative lugs -->
+            <circle cx="320" cy="81" r="5.5" fill="#ffe79e"/>
+            <circle cx="320" cy="227" r="5.5" fill="#ffe79e"/>
+            <circle cx="247" cy="154" r="5.5" fill="#ffe79e"/>
+            <circle cx="393" cy="154" r="5.5" fill="#ffe79e"/>
+          </g>
+        </svg>
+      </div>
+
+      <div class="numbers-stage" aria-label="Counting number pads">
+        <button class="toy-pad" type="button" data-num="1" aria-label="Number 1">
+          1<span class="pad-dots" aria-hidden="true"><i></i></span>
+        </button>
+        <button class="toy-pad" type="button" data-num="2" aria-label="Number 2">
+          2<span class="pad-dots" aria-hidden="true"><i></i><i></i></span>
+        </button>
+        <button class="toy-pad" type="button" data-num="3" aria-label="Number 3">
+          3<span class="pad-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        </button>
+        <button class="toy-pad" type="button" data-num="4" aria-label="Number 4">
+          4<span class="pad-dots" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        </button>
+        <button class="toy-pad" type="button" data-num="5" aria-label="Number 5">
+          5<span class="pad-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        </button>
+      </div>
+
+      <div class="sound" id="sound" aria-live="polite">Ready to play!</div>
+    </div>
+
+    <div class="horizon" aria-hidden="true">
+      <svg class="skyline-svg" viewBox="0 0 1200 110" preserveAspectRatio="none">
+        <!-- Soft distant hills -->
+        <path d="M0 110 Q180 42 380 86 T780 78 T1200 72 L1200 110 Z" fill="rgba(120, 196, 166, 0.32)"/>
+        <!-- Subtle London silhouette: Big Ben, London Eye, cosy terraces -->
+        <g fill="rgba(96, 152, 166, 0.22)">
+          <!-- Left cosy terrace houses -->
+          <rect x="70" y="64" width="38" height="46" rx="4"/>
+          <polygon points="66,66 89,44 112,66"/>
+          <rect x="114" y="72" width="34" height="38" rx="4"/>
+          <polygon points="110,74 131,56 152,74"/>
+          <!-- Big Ben clock tower -->
+          <rect x="210" y="34" width="28" height="76" rx="2"/>
+          <polygon points="208,34 224,8 240,34"/>
+          <circle cx="224" cy="48" r="7" fill="rgba(255, 249, 235, 0.7)"/>
+          <!-- London Eye wheel -->
+          <circle cx="968" cy="64" r="34" fill="none" stroke="rgba(96, 152, 166, 0.24)" stroke-width="4.5"/>
+          <circle cx="968" cy="64" r="6"/>
+          <path d="M968 64l-16 46M968 64l16 46" stroke="rgba(96, 152, 166, 0.24)" stroke-width="4"/>
+          <!-- Right cottages -->
+          <rect x="1058" y="68" width="40" height="42" rx="4"/>
+          <polygon points="1054,70 1078,48 1102,70"/>
+        </g>
+        <!-- Tiny pastel red London bus -->
+        <g transform="translate(838, 66)">
+          <rect x="0" y="6" width="54" height="28" rx="7" fill="#f07260" opacity="0.72"/>
+          <rect x="6" y="11" width="11" height="8" rx="2" fill="#fff8e8" opacity="0.9"/>
+          <rect x="21" y="11" width="11" height="8" rx="2" fill="#fff8e8" opacity="0.9"/>
+          <rect x="36" y="11" width="11" height="8" rx="2" fill="#fff8e8" opacity="0.9"/>
+          <circle cx="13" cy="35" r="5" fill="#3a5d7c" opacity="0.75"/>
+          <circle cx="41" cy="35" r="5" fill="#3a5d7c" opacity="0.75"/>
+        </g>
+      </svg>
+      <div class="ground">
+        <span>London town</span>
+        <span>tap tap tap</span>
+        <span>little drummer</span>
+      </div>
+    </div>
   </main>
-  <script>
-    const game=document.querySelector('#game'),count=document.querySelector('#count'),sound=document.querySelector('#sound'),parent=document.querySelector('#parent');let mode='drums',total=0,ctx,delay,roll,parentHold;const drums=[['Boom','',86,'kick'],['Tap','',182,'snare'],['Tss','',480,'hat'],['Tom','',138,'tom'],['Ding','',650,'ding']],instruments=['assets/toy-drum-v2.png','assets/snare.png'],drumEmojis=['🥁','🎵','✨','⭐','🎶','🎺','🔴','🟡','🔵','🟢'],icons=['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','🐶','🚕','🚌','🎈','🌈','⭐','🎵'];
-    function noise(seconds){let b=ctx.createBuffer(1,ctx.sampleRate*seconds,ctx.sampleRate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=Math.random()*2-1;return b}function play(d){ctx??=new AudioContext();if(ctx.state==='suspended')ctx.resume();let n=ctx.currentTime,g=ctx.createGain();g.connect(ctx.destination);g.gain.setValueAtTime(.0001,n);if(d[3]==='kick'||d[3]==='tom'){let o=ctx.createOscillator();o.type=d[3]==='kick'?'sine':'triangle';o.frequency.setValueAtTime(d[2]*2.8,n);o.frequency.exponentialRampToValueAtTime(d[2]*.65,n+.17);g.gain.exponentialRampToValueAtTime(.22,n+.008);g.gain.exponentialRampToValueAtTime(.0001,n+.32);o.connect(g);o.start(n);o.stop(n+.34);return}let s=ctx.createBufferSource(),f=ctx.createBiquadFilter();s.buffer=noise(d[3]==='hat'?.09:.24);f.type=d[3]==='hat'?'highpass':d[3]==='ding'?'bandpass':'bandpass';f.frequency.value=d[3]==='hat'?6500:d[3]==='ding'?3600:1800;f.Q.value=d[3]==='ding'?1.5:.7;s.connect(f);f.connect(g);g.gain.exponentialRampToValueAtTime(d[3]==='hat'?.06:.13,n+.005);g.gain.exponentialRampToValueAtTime(.0001,n+(d[3]==='hat'?.09:.22));s.start(n);s.stop(n+.25);if(d[3]==='ding'){let o=ctx.createOscillator();o.type='sine';o.frequency.value=620;o.connect(g);o.start(n);o.stop(n+.18)}}
-    function smash(x=innerWidth/2,y=innerHeight/2){let item,drumMode=mode==='drums';if(drumMode){item=drums[Math.floor(Math.random()*drums.length)];play(item);sound.textContent=item[0]}else{item=['Ta-da!',icons[Math.floor(Math.random()*icons.length)]];sound.textContent=item[0]}let showInstrument=drumMode&&Math.random()<.35,b=showInstrument?document.createElement('img'):document.createElement('span');b.className='burst'+(showInstrument?' instrument-burst':'');if(showInstrument){b.src=instruments[Math.floor(Math.random()*instruments.length)];b.alt=''}else b.textContent=drumMode?drumEmojis[Math.floor(Math.random()*drumEmojis.length)]:item[1];b.style.left=x+'px';b.style.top=y+'px';game.append(b);setTimeout(()=>b.remove(),1250);count.textContent=++total}
-    function stop(){clearTimeout(delay);clearInterval(roll)}function begin(x,y){smash(x,y);stop();delay=setTimeout(()=>roll=setInterval(()=>smash(x+(Math.random()-.5)*70,y+(Math.random()-.5)*45),130),330)}
-    game.addEventListener('pointerdown',e=>{if(e.target===parent)return;game.setPointerCapture?.(e.pointerId);begin(e.clientX,e.clientY)});game.addEventListener('pointerup',stop);game.addEventListener('pointercancel',stop);addEventListener('contextmenu',e=>e.preventDefault());addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();return}if(!e.repeat&&!['Meta','Control','Alt','Shift'].includes(e.key)){e.preventDefault();begin(innerWidth*(.1+Math.random()*.8),innerHeight*(.15+Math.random()*.65))}});addEventListener('keyup',stop);addEventListener('blur',stop);
-    parent.addEventListener('pointerdown',e=>{e.stopPropagation();parentHold=setTimeout(openPanel,1600)});parent.addEventListener('pointerup',()=>clearTimeout(parentHold));function openPanel(){let p=document.createElement('div');p.className='panel';p.innerHTML='<button class="close">×</button><p class="eyebrow">PARENT CONTROLS</p><h2>Choose a play mode</h2><div class="modes"><button data-mode="drums" class="'+(mode==='drums'?'active':'')+'">🥁<span>Drum Party</span><small>Sounds + pictures</small></button><button data-mode="numbers" class="'+(mode==='numbers'?'active':'')+'">🔢<span>Numbers & Emoji</span><small>Colourful surprises</small></button></div><p class="parent-note">Gentle colours, no flashing, and one sound at a time.</p>';game.append(p);p.querySelector('.close').onclick=()=>p.remove();p.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{mode=b.dataset.mode;game.classList.toggle('numbers',mode==='numbers');document.querySelector('#mode-name').textContent=mode==='drums'?'DRUM PARTY':'NUMBERS & EMOJI';document.querySelector('#heading').textContent=mode==='drums'?'Tap, tap, boom!':'Count and sparkle!';document.querySelector('#instruction').textContent=mode==='drums'?'Press anything. Hold it for a drum roll!':'Press anything to make a happy surprise!';p.remove()})}
-  </script>
+
+  <script src="./app.js"></script>
 </body>
 </html>
